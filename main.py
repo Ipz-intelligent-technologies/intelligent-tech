@@ -1,33 +1,27 @@
-import tensorflow as tf
-from tensorflow.keras.utils import load_img, img_to_array
-
-from fastapi import FastAPI
-from fastapi import File, UploadFile
-
-from io import BytesIO
-
+import joblib
 import numpy as np
+import uvicorn
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+model = joblib.load("kmeans_model.pkl")
+scaler = joblib.load("scaler.pkl")
+
+class InputData(BaseModel):
+    avg_credit_limit: float
+    total_credit_cards: float
 
 app = FastAPI()
 
-MODEL = tf.keras.models.load_model('model.kf')
-
-@app.get("/ping")
-def root():
-    return "pong"
-
 @app.post("/predict")
-async def predict(file: UploadFile=File(...)):
-    file = await file.read()
-    img = load_img(BytesIO(file), target_size=(150, 150))
+async def predict(data: InputData):
+    # Transform the input data
+    x = np.array([data.avg_credit_limit, data.total_credit_cards]).reshape(1, -1)
+    x = scaler.transform(x)
 
-    x = img_to_array(img)
-    x = np.expand_dims(x, axis=0)
-    images = np.vstack([x]) 
+    pred = model.predict(x)[0]
 
-    classes = MODEL.predict(images, batch_size=10)
+    return {"cluster_label": int(pred)}
 
-    if classes[0]>0:
-        return {"prediction": "This is a dog"}
-    else:
-        return {"prediction": "This is a cat"}
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)
