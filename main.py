@@ -1,11 +1,10 @@
 from fastapi import FastAPI, UploadFile
 import tensorflow as tf
 import librosa
+import tempfile
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-import os
 
-print(os.getcwd())
 
 app = FastAPI()
 
@@ -62,7 +61,11 @@ def get_predicted_emotion(probabilities):
 
 @app.post("/predict-emotion")
 async def predict_emotion(file: UploadFile):
-    contents = await file.read()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        file_path = os.path.join(temp_dir, file.filename)
+        with open(file_path, "wb") as temp_file:
+            temp_file.write(await file.read())
+
     preprocessed_audio = preprocess_audio(contents)
     predicted_probabilities = classify_emotion(preprocessed_audio)
     predicted_emotion = get_predicted_emotion(predicted_probabilities)
