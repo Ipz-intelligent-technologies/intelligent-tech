@@ -1,33 +1,69 @@
-import joblib
+from fastapi import FastAPI, UploadFile
+import tensorflow as tf
+import librosa
 import numpy as np
-import pandas as pd
-import uvicorn
-from fastapi import FastAPI
-from pydantic import BaseModel
+from sklearn.preprocessing import StandardScaler
+import os
 
-model = joblib.load("sarimax_model.pkl")
-df = joblib.load("df.pkl")
-
-class InputData(BaseModel):
-    number_of_dates: int
+print(os.getcwd())
 
 app = FastAPI()
 
-def get_forecast_values(results, df, N):
-    last_date = df.reset_index().at[len(df)-1, 'date']  # extracting the last date
-    print(f"The last date is: {last_date}")
-    forecast_date = pd.to_datetime(last_date) + pd.DateOffset(days=1)
-    print(f"start forecast date: {forecast_date}")
-    forecast = results.forecast(steps=N)  # forecasting for N days
-    forecast_index = pd.date_range(start=forecast_date, periods=N)
-    df_forecast = pd.DataFrame({'forecast': forecast.values}, index=forecast_index)
-    return df_forecast
+# Step 1: Load the trained model
+model = tf.keras.models.load_model("res_model.h5")
 
-@app.post("/predict")
-async def predict(data: InputData):
-    df_forecast = get_forecast_values(model, df, N=data.number_of_dates)
+def zcr(data, frame_length=2048, hop_length=512):
+    zcr = librosa.feature.zero_crossing_rate(data, frame_length=frame_length, hop_length=hop_length)
+    return np.squeeze(zcr)
 
-    return df_forecast.to_dict()
+def rmse(data, frame_length=2048, hop_length=512):
+    rmse_features = librosa.feature.rms(y=data, frame_length=frame_length, hop_length=hop_length)
+    return np.squeeze(rmse_features)
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+def mfcc(data, sr, frame_length=2048, hop_length=512, flatten: bool = True):
+    mfcc_features = librosa.feature.mfcc(y=data, sr=sr)
+    return np.squeeze(mfcc_features.T) if not flatten else np.ravel(mfcc_features.T)
+
+def extract_features(data, sr, frame_length=2048, hop_length=512):
+    result = np.array([])
+    
+    result = np.hstack((result,
+                        zcr(data, frame_length, hop_length),
+                        rmse(data, frame_length, hop_length),
+                        mfcc(data, sr, frame_length, hop_length)
+                       ))
+    return result
+
+
+# Step 2: Preprocess the received audio file
+def preprocess_audio(audio_data):
+    received_audio, received_sr = librosa.load(audio_data, duration=2.5, offset=0.6)
+    preprocessed_audio = extract_features(received_audio, received_sr)
+    return preprocessed_audio
+
+# Step 3: Normalize the extracted features
+def normalize_features(features):
+    scaler = StandardScaler()
+    normalized_features = scaler.fit_transform([features])
+    return normalized_features
+
+# Step 4: Classify the emotion
+def classify_emotion(features):
+    normalized_features = normalize_features(features)
+    predicted_probabilities = model.predict(normalized_features)
+    return predicted_probabilities
+
+# Step 5: Determine the predicted emotion
+def get_predicted_emotion(probabilities):
+    emotion_labels = ['disgust', 'fear', 'sad', 'neutral', 'happy', 'angry', 'surprise']
+    predicted_emotion_index = np.argmax(probabilities)
+    predicted_emotion = emotion_labels[predicted_emotion_index]
+    return predicted_emotion
+
+@app.post("/predict-emotion")
+async def predict_emotion(file: UploadFile):
+    contents = await file.read()
+    preprocessed_audio = preprocess_audio(contents)
+    predicted_probabilities = classify_emotion(preprocessed_audio)
+    predicted_emotion = get_predicted_emotion(predicted_probabilities)
+    return {"predicted_emotion": predicted_emotion}
